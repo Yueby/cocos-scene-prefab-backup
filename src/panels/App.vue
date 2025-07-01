@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { ElButton } from 'element-plus';
 import fs from 'fs/promises';
 import path from 'path';
 import { computed, onMounted, ref, watch } from 'vue';
 import { name } from '../../package.json' with { type: 'json' };
+import { clearAllBackups } from '../utils/cleanup';
 import { file } from '../utils/file';
+import { profile } from '../utils/profile';
 import { getBackupTree, type BackupTreeNode } from './backup-fs';
 import { state } from './pina';
 
@@ -15,8 +18,21 @@ const currentDir = ref<string>('');
 const selectedRows = ref<any[]>([]);
 const treeRef = ref();
 
+// 拖拽分割线相关
+const leftWidth = ref(320); // 初始宽度
+const dragging = ref(false);
+
+// 自动清理设置
+const CLEAN_KEY = 'keepDays';
+const cleanDays = ref(7);
+const showCleanDialog = ref(false);
+
 onMounted(async () => {
     await refreshTree();
+    const val = await profile.getConfig(CLEAN_KEY);
+    if (typeof val === 'number' && !isNaN(val)) {
+        cleanDays.value = val;
+    }
 });
 
 watch(() => state.refreshFlag, () => {
@@ -193,18 +209,84 @@ function handleTreeDblClick() {
         handleNodeDblClick(node);
     }
 }
+
+async function clearAll() {
+    const rootDir = file.getPluginTempDir();
+    const result = await Editor.Dialog.warn('确定要清空所有备份吗？此操作不可恢复！', {
+        title: '全部清除确认',
+        buttons: ['清空', '取消']
+    });
+    if (result.response === 0) {
+        await clearAllBackups(rootDir);
+        await Editor.Dialog.info('已全部清除', { title: '提示' });
+        await refreshTree();
+    }
+}
+
+function onSplitterMouseDown(e: MouseEvent) {
+    dragging.value = true;
+    document.body.style.cursor = 'col-resize';
+    const startX = e.clientX;
+    const startWidth = leftWidth.value;
+    function onMouseMove(ev: MouseEvent) {
+        const delta = ev.clientX - startX;
+        let newWidth = startWidth + delta;
+        newWidth = Math.max(200, Math.min(newWidth, 600)); // 限制宽度
+        leftWidth.value = newWidth;
+    }
+    function onMouseUp() {
+        dragging.value = false;
+        document.body.style.cursor = '';
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+    }
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+}
+
+function openCleanDialog() {
+    showCleanDialog.value = true;
+}
+
+async function saveCleanDays() {
+    await profile.setConfig(CLEAN_KEY, cleanDays.value);
+    showCleanDialog.value = false;
+}
 </script>
 
 <template>
-    <div class="backup-tool-root">
-        <el-card class="tree-card">
+    <div class="split-container">
+        <div class="tree-card" :style="{ width: leftWidth + 'px' }">
             <div @dblclick="handleTreeDblClick">
                 <el-tree ref="treeRef" :data="treeData" node-key="fullPath"
                     :props="{ label: 'label', children: 'children' }" @node-click="handleNodeClick" highlight-current
                     default-expand-all :expand-on-click-node="false" />
             </div>
-        </el-card>
+        </div>
+        <div class="splitter" :class="{ dragging }" @mousedown="onSplitterMouseDown"></div>
         <div class="main-panel">
+            <el-card class="toolbar-card">
+                <div class="toolbar">
+                    <el-button size="small" type="warning" @click="clearAll" icon="el-icon-delete" plain>
+                        全部清除
+                    </el-button>
+                    <el-button size="small" icon="el-icon-setting" @click="openCleanDialog" plain>
+                        自动清理设置
+                    </el-button>
+                    <span class="clean-desc">自动保留 <b>{{ cleanDays }}</b> 天</span>
+                </div>
+            </el-card>
+            <el-dialog v-model="showCleanDialog" title="自动清理设置" width="320px">
+                <div style="margin: 16px 0;">
+                    仅保留最近
+                    <el-input-number v-model="cleanDays" :min="1" :max="90" />
+                    天的备份，超期自动删除。
+                </div>
+                <template #footer>
+                    <el-button @click="showCleanDialog = false">取消</el-button>
+                    <el-button type="primary" @click="saveCleanDays">确定</el-button>
+                </template>
+            </el-dialog>
             <el-card class="stats-card">
                 <el-descriptions :column="4">
                     <el-descriptions-item label="总备份数">{{ stats.total }}</el-descriptions-item>
@@ -244,23 +326,44 @@ function handleTreeDblClick() {
 </template>
 
 <style scoped>
-.backup-tool-root {
+.split-container {
     display: flex;
-    height: 96vh;
-    gap: 16px;
+    height: 92vh;
+    gap: 0;
     padding: 6px;
     box-sizing: border-box;
+    position: relative;
 }
 
 .tree-card {
-    width: 320px;
-    min-width: 240px;
-    max-width: 400px;
+    min-width: 200px;
+    max-width: 600px;
     height: 100%;
     display: flex;
     flex-direction: column;
     box-shadow: 0 2px 8px #0001;
     overflow-y: auto;
+    background: #232323;
+    transition: width 0.1s;
+    margin-right: 6px;
+}
+
+.splitter {
+    width: 3px;
+    cursor: col-resize;
+    background: linear-gradient(to right, #4446, #8884, #4446);
+    height: 100%;
+    z-index: 10;
+    position: relative;
+    transition: background 0.2s;
+    margin: 0 2px;
+}
+
+.splitter:hover,
+.splitter.dragging {
+    background: linear-gradient(to right, #ffd966, #ff9900, #ffd966);
+    box-shadow: 0 0 6px 2px #ff990055;
+    border-radius: 2px;
 }
 
 .main-panel {
@@ -270,6 +373,12 @@ function handleTreeDblClick() {
     gap: 16px;
     min-width: 0;
     overflow-y: auto;
+    margin-left: 6px;
+}
+
+.toolbar-card {
+    margin-bottom: 0;
+    box-shadow: 0 2px 8px #0001;
 }
 
 .stats-card {
@@ -300,7 +409,21 @@ function handleTreeDblClick() {
 .table-scroll {
     flex: 1;
     overflow-y: auto;
-    min-height: 120px;
-    max-height: 70vh;
+    min-height: 100px;
+    max-height: 50vh;
+}
+
+.toolbar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-bottom: 0;
+    gap: 8px;
+}
+
+.clean-desc {
+    margin-left: 12px;
+    color: #888;
+    font-size: 13px;
 }
 </style>

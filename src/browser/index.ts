@@ -1,8 +1,8 @@
-
 import fs from 'fs/promises';
 import path from "path";
 import { name } from '../../package.json' with { type: 'json' };
 import type { CocosAsset } from '../types';
+import { cleanupOldBackups } from '../utils/cleanup';
 import { file } from "../utils/file";
 import { logger } from "../utils/logger";
 import { formatDateTime } from '../utils/util';
@@ -79,6 +79,8 @@ async function backupAssetFile(srcFilePath: string, type: string) {
     try {
         await fs.copyFile(srcFilePath, backupPath);
         logger.log(`备份成功: ${backupPath}`);
+        // 自动清理7天前的备份
+        await cleanupOldBackups(backupRootDir, 7);
     } catch (e) {
         logger.error(`备份失败: ${e}`);
     }

@@ -11,7 +11,6 @@ import { keyAppRoot, keyMessage } from './provide-inject';
 
 import type { MessageOptions } from 'element-plus';
 import { CocosAsset } from '../types';
-import { logger } from '../utils/logger';
 
 const weakMap = new WeakMap();
 
@@ -42,7 +41,6 @@ export default Editor.Panel.define({
 	},
 	methods: {
 		async assetChange(uuid: string, data: CocosAsset) {
-			logger.log(`received assetChange ${uuid}`, data);
 			setTimeout(() => {
 				state.refreshFlag = !state.refreshFlag;
 			}, 200);
