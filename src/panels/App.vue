@@ -2,12 +2,15 @@
 import { ElButton } from 'element-plus';
 import fs from 'fs/promises';
 import path from 'path';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, h, onMounted, ref, watch } from 'vue';
 import { name } from '../../package.json' with { type: 'json' };
 import { clearAllBackups } from '../utils/cleanup';
 import { file } from '../utils/file';
 import { profile } from '../utils/profile';
 import { getBackupTree, type BackupTreeNode } from './backup-fs';
+import CustomTable from './components/CustomTable.vue';
+import CustomTree from './components/CustomTree.vue';
+import TypeFilter from './components/TypeFilter.vue';
 import { state } from './pina';
 
 // import { ElMessageBox, ElMessage } from 'element-plus';
@@ -17,6 +20,7 @@ const selectedFiles = ref<any[]>([]);
 const currentDir = ref<string>('');
 const selectedRows = ref<any[]>([]);
 const treeRef = ref();
+const selectedNode = ref<any>(null);
 
 // 拖拽分割线相关
 const leftWidth = ref(320); // 初始宽度
@@ -26,6 +30,14 @@ const dragging = ref(false);
 const CLEAN_KEY = 'keepDays';
 const cleanDays = ref(7);
 const showCleanDialog = ref(false);
+
+const typeFilter = ref('all'); // 新增：类型筛选
+
+const typeOptions = [
+    { value: 'all', label: '全部' },
+    { value: 'scene', label: '场景' },
+    { value: 'prefab', label: '预制体' },
+];
 
 onMounted(async () => {
     await refreshTree();
@@ -41,7 +53,9 @@ watch(() => state.refreshFlag, () => {
 
 async function refreshTree() {
     const rootDir = file.getPluginTempDir();
-    treeData.value = await getBackupTree(rootDir);
+    let keepDays = await profile.getConfig('keepDays');
+    if (typeof keepDays !== 'number' || isNaN(keepDays)) keepDays = 7;
+    treeData.value = await getBackupTree(rootDir, keepDays);
     if (currentDir.value) {
         const node = findNodeByPath(treeData.value, currentDir.value.split(path.sep));
         if (node) handleNodeClick(node);
@@ -203,11 +217,13 @@ async function handleNodeDblClick(data: any) {
     Editor.Message.send(name, 'open-in-explorer', fullPath);
 }
 
-function handleTreeDblClick() {
-    const node = treeRef.value.getCurrentNode();
-    if (node) {
-        handleNodeDblClick(node);
-    }
+function handleTreeNodeClick(node: any) {
+    selectedNode.value = node;
+    handleNodeClick(node);
+}
+
+function handleTreeNodeDblClick(node: any) {
+    handleNodeDblClick(node);
 }
 
 async function clearAll() {
@@ -252,16 +268,51 @@ async function saveCleanDays() {
     await profile.setConfig(CLEAN_KEY, cleanDays.value);
     showCleanDialog.value = false;
 }
+
+// 新增：递归过滤树节点
+function filterTreeByType(nodes: BackupTreeNode[], type: string): BackupTreeNode[] {
+    if (type === 'all') return nodes;
+    return nodes
+        .map(node => {
+            if (node.isFile) {
+                return node.type === type ? node : null;
+            } else if (node.children) {
+                const filteredChildren = filterTreeByType(node.children, type);
+                if (filteredChildren.length > 0) {
+                    return { ...node, children: filteredChildren };
+                }
+            }
+            return null;
+        })
+        .filter(Boolean) as BackupTreeNode[];
+}
+
+const filteredTreeData = computed(() => filterTreeByType(treeData.value, typeFilter.value));
+
+// 渲染函数
+const renderIcon = (node: any) => {
+    if (node.type === 'scene') return h('ui-icon', { value: 'scene', style: 'font-size:16px;' });
+    if (node.type === 'prefab') return h('ui-icon', { value: 'prefab', style: 'font-size:16px;' });
+    if (!node.isFile) return h('ui-icon', { value: 'folder', style: 'font-size:16px;' });
+    return null;
+};
+const renderLabel = (node: any) => h('span', [node.label, node.isFile ? h('span', { style: 'color: #888;' }, ` (${node.size}B)`) : null]);
+const renderActions = (node: any) => null;
 </script>
 
 <template>
     <div class="split-container">
-        <div class="tree-card" :style="{ width: leftWidth + 'px' }">
-            <div @dblclick="handleTreeDblClick">
-                <el-tree ref="treeRef" :data="treeData" node-key="fullPath"
-                    :props="{ label: 'label', children: 'children' }" @node-click="handleNodeClick" highlight-current
-                    default-expand-all :expand-on-click-node="false" />
-            </div>
+        <div class="tree-card" :style="{ width: leftWidth + 'px', height: '100%' }">
+            <el-card class="filter-card">
+                <TypeFilter v-model="typeFilter" :types="typeOptions" />
+            </el-card>
+            <el-card
+                class="tree-el-card"
+                style="flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto;">
+                <CustomTree :data="filteredTreeData" :selected-node="selectedNode" :render-icon="renderIcon"
+                    :render-label="renderLabel" :render-actions="renderActions" @click="handleTreeNodeClick"
+                    @dblclick="handleTreeNodeDblClick" />
+            </el-card>
         </div>
         <div class="splitter" :class="{ dragging }" @mousedown="onSplitterMouseDown"></div>
         <div class="main-panel">
@@ -288,7 +339,7 @@ async function saveCleanDays() {
                 </template>
             </el-dialog>
             <el-card class="stats-card">
-                <el-descriptions :column="4">
+                <el-descriptions :column="4" class="stats-desc" border>
                     <el-descriptions-item label="总备份数">{{ stats.total }}</el-descriptions-item>
                     <el-descriptions-item label="场景文件">{{ stats.scene }}</el-descriptions-item>
                     <el-descriptions-item label="预制体">{{ stats.prefab }}</el-descriptions-item>
@@ -296,30 +347,30 @@ async function saveCleanDays() {
                     <el-descriptions-item label="最近备份">{{ stats.lastTime || '-' }}</el-descriptions-item>
                 </el-descriptions>
             </el-card>
-            <el-card class="table-card">
+            <el-card>
                 <div class="table-ops-wrap">
                     <el-button size="small" :disabled="!selectedRows.length" @click="batchImport">导入选中</el-button>
                     <el-button size="small" type="danger" :disabled="!selectedRows.length"
                         @click="batchDelete">删除选中</el-button>
                 </div>
-                <div class="table-scroll">
-                    <el-table :data="selectedFiles" v-if="selectedFiles.length"
-                        @selection-change="handleSelectionChange" style="margin-top: 8px;">
-                        <el-table-column type="selection" width="40" />
-                        <el-table-column label="类型" width="60">
-                            <template #default="{ row }">
-                                <ui-icon v-if="row.type === 'scene'" value="scene"
-                                    style="font-size:20px;vertical-align:middle;" />
-                                <ui-icon v-else-if="row.type === 'prefab'" value="prefab"
-                                    style="font-size:20px;vertical-align:middle;" />
-                            </template>
-                        </el-table-column>
-                        <el-table-column prop="label" label="文件名" />
-                        <el-table-column prop="size" label="大小" />
-                        <el-table-column prop="time" label="备份时间" />
-                    </el-table>
-                    <div v-else class="empty-tip">请选择目录或文件查看备份详情</div>
-                </div>
+            </el-card>
+
+            <el-card class="table-card">
+
+                <CustomTable :data="selectedFiles" :columns="[
+                    { label: '类型', prop: 'type', slot: 'type' },
+                    { label: '文件名', prop: 'label' },
+                    { label: '大小', prop: 'size' },
+                    { label: '备份时间', prop: 'time' }
+                ]" rowKey="fullPath" height="100%" v-model:selected="selectedRows" :selectable="true">
+                    <template #type="{ row }">
+                        <ui-icon v-if="row.type === 'scene'" value="scene"
+                            style="font-size:20px;vertical-align:middle;" />
+                        <ui-icon v-else-if="row.type === 'prefab'" value="prefab"
+                            style="font-size:20px;vertical-align:middle;" />
+                    </template>
+                </CustomTable>
+
             </el-card>
         </div>
     </div>
@@ -328,24 +379,11 @@ async function saveCleanDays() {
 <style scoped>
 .split-container {
     display: flex;
-    height: 92vh;
+    height: 96vh;
     gap: 0;
     padding: 6px;
     box-sizing: border-box;
     position: relative;
-}
-
-.tree-card {
-    min-width: 200px;
-    max-width: 600px;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 2px 8px #0001;
-    overflow-y: auto;
-    background: #232323;
-    transition: width 0.1s;
-    margin-right: 6px;
 }
 
 .splitter {
@@ -370,9 +408,7 @@ async function saveCleanDays() {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    min-width: 0;
-    overflow-y: auto;
+    gap: 2px;
     margin-left: 6px;
 }
 
@@ -391,6 +427,9 @@ async function saveCleanDays() {
     display: flex;
     flex-direction: column;
     box-shadow: 0 2px 8px #0001;
+    margin-bottom: 0;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .empty-tip {
@@ -403,14 +442,11 @@ async function saveCleanDays() {
 .table-ops-wrap {
     display: flex;
     gap: 8px;
-    margin-bottom: 8px;
 }
 
-.table-scroll {
+.el-table {
     flex: 1;
-    overflow-y: auto;
-    min-height: 100px;
-    max-height: 50vh;
+    min-height: 0;
 }
 
 .toolbar {
@@ -425,5 +461,51 @@ async function saveCleanDays() {
     margin-left: 12px;
     color: #888;
     font-size: 13px;
+}
+
+.tree-card {
+    min-width: 200px;
+    max-width: 600px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    transition: width 0.1s;
+    margin-right: 6px;
+    gap: 2px;
+    min-height: 0;
+}
+.tree-el-card {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+}
+.stats-desc {
+    --el-descriptions-item-padding: 6px 12px;
+    --el-descriptions-border-color: #3336;
+    --el-descriptions-label-color: #8ecfff;
+    --el-descriptions-content-color: #eee;
+    background: #232323;
+    border-radius: 4px;
+    font-size: 14px;
+}
+.stats-desc .el-descriptions__cell {
+    background: transparent;
+}
+.stats-desc .el-descriptions__label {
+    color: #8ecfff;
+    font-weight: 500;
+}
+.stats-desc .el-descriptions__content {
+    color: #eee;
+}
+</style>
+
+<style>
+.el-card__body {
+    padding: 4px !important;
+
 }
 </style>

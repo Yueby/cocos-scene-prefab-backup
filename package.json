@@ -1,6 +1,6 @@
 {
     "name": "cocos-scene-prefab-backup",
-    "version": "1.0.1",
+    "version": "1.0.3",
     "description": "i18n:cocos-scene-prefab-backup.description",
     "package_version": 2,
     "type": "module",

@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { cleanupOldBackups } from '../utils/cleanup';
 
 export interface BackupTreeNode {
 	label: string;
@@ -10,11 +11,49 @@ export interface BackupTreeNode {
 	children?: BackupTreeNode[];
 	fullPath: string; // 相对 plugintempdir 的完整路径
 	parentPath?: string; // 父目录的相对路径
-	maxTime?: string; // 新增：本节点及其子节点的最大时间
+	maxTime?: string; // 本节点及其子节点的最大时间
+	date?: string; // 日期目录
+	hour?: string; // 小时段目录
+	minuteGroup?: string; // 分组目录
+}
+
+function parseDateFromPath(relPath: string): string | null {
+	const parts = relPath.split(path.sep);
+	for (const part of parts) {
+		if (/^\d{4}-\d{2}-\d{2}$/.test(part)) return part;
+	}
+	return null;
+}
+
+function parseHourFromPath(relPath: string): string | null {
+	const parts = relPath.split(path.sep);
+	for (const part of parts) {
+		if (/^\d{2}-\d{2}$/.test(part)) return part.split('-')[0];
+	}
+	return null;
+}
+
+function parseMinuteGroupFromPath(relPath: string): string | null {
+	const parts = relPath.split(path.sep);
+	for (const part of parts) {
+		if (/^\d{2}-\d{2}$/.test(part)) return part.split('-')[1];
+	}
+	return null;
+}
+
+function parseTimeFromFileName(fileName: string): string | null {
+	const match = fileName.match(/_(\d{8}_\d{6})/);
+	if (match) {
+		const t = match[1];
+		return `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)} ${t.slice(9, 11)}:${t.slice(11, 13)}:${t.slice(13, 15)}`;
+	}
+	return null;
 }
 
 // 递归读取目录，生成树结构
-export async function getBackupTree(rootDir: string): Promise<BackupTreeNode[]> {
+export async function getBackupTree(rootDir: string, keepDays = 7): Promise<BackupTreeNode[]> {
+	// 初始化时先清理一次
+	await cleanupOldBackups(rootDir, keepDays);
 	async function walk(dir: string, relPath: string = '', parentPath: string = '', depth = 0): Promise<BackupTreeNode[]> {
 		let entries: any[];
 		try {
@@ -40,35 +79,33 @@ export async function getBackupTree(rootDir: string): Promise<BackupTreeNode[]> 
 					fullPath: nodeRelPath,
 					parentPath: parentPath,
 					children,
-					maxTime
+					maxTime,
+					date: parseDateFromPath(nodeRelPath) || undefined,
+					hour: parseHourFromPath(nodeRelPath) || undefined,
+					minuteGroup: parseMinuteGroupFromPath(nodeRelPath) || undefined
 				});
 			} else {
-				// 解析类型和时间
 				const ext = path.extname(entry.name);
 				const type = ext === '.scene' ? 'scene' : ext === '.prefab' ? 'prefab' : '';
 				let stat;
 				try {
 					stat = await fs.stat(fullPath);
 				} catch {
-					stat = { size: 0, mtime: new Date() };
+					stat = { size: 0 };
 				}
-				// 从文件名提取时间
-				let backupTime = '';
-				const timeMatch = entry.name.match(/_(\d{8}_\d{6})/);
-				if (timeMatch) {
-					const t = timeMatch[1];
-					backupTime = `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)} ${t.slice(9, 11)}:${t.slice(11, 13)}:${t.slice(13, 15)}`;
-				}
-				const timeStr = backupTime || stat.mtime.toISOString().replace('T', ' ').slice(0, 19);
+				const timeStr = parseTimeFromFileName(entry.name);
 				nodes.push({
 					label: entry.name,
 					isFile: true,
 					size: Number(stat.size) || 0,
-					time: timeStr,
+					time: timeStr || undefined,
 					type,
 					fullPath: nodeRelPath,
 					parentPath: parentPath,
-					maxTime: timeStr
+					maxTime: timeStr || undefined,
+					date: parseDateFromPath(nodeRelPath) || undefined,
+					hour: parseHourFromPath(nodeRelPath) || undefined,
+					minuteGroup: parseMinuteGroupFromPath(nodeRelPath) || undefined
 				});
 			}
 		}
